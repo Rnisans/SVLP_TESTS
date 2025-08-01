@@ -7,7 +7,7 @@ extern "C" {
 	#include "stdio.h"
 	#include "Temperature18B20.h"
 	#include "stm32f10x_tim.h"
-	#include "delay/Delay_us.h"
+	#include "delay/delay.h"
 
 }
 #include "headers/svlp_writer.h"
@@ -161,7 +161,7 @@ int main(void) {
     ClockInit();
     USBInit();
     TIMEInit();
-    SysTick_Init();
+    delay_init();
     temperatureInit();
 
     Socket socket;
