@@ -2,7 +2,7 @@
 extern "C" {
 	#include "stm32f10x.h"
 	#include "RCC_CLOCK.h"
-	#include "USB-VCP.h"
+	#include "usb_vcp_wrapper.h"
 	#include "string.h"
 	#include "stdio.h"
 	#include "Temperature18B20.h"
