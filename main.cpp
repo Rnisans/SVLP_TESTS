@@ -1,29 +1,31 @@
 
 extern "C" {
 	#include "stm32f10x.h"
-	#include "RCC_CLOCK.h"
+	#include "hw_config.h"
 	#include "USB-VCP.h"
 	#include "string.h"
 	#include "stdio.h"
 	#include "Temperature18B20.h"
 	#include "stm32f10x_tim.h"
 	#include "delay/Delay_us.h"
-
+	#include "STM32_USB-FS-Device_Driver/inc/usb_lib.h"
+	#include "STM32_USB-FS-Device_Driver/usb_desc.h"
+	#include "STM32_USB-FS-Device_Driver/usb_pwr.h"
+	#include "STM32_USB-FS-Device_Driver/usb_istr.h"
 }
-#include "headers/svlp_writer.h"
+#include "svlp_common_lib/svlp_lib/headers/svlp_writer.h"
 #include "socket/socket_1.h"
 
-
-// Р В¤РЎС“Р Р…Р С”РЎвЂ Р С‘РЎРЏ Р С—Р ВµРЎР‚Р ВµР Р†Р С•Р Т‘Р В° Р С‘Р В· РЎРѓРЎвЂљРЎР‚Р С•Р С”Р С‘ Р Р† float
+// Custom atof function to convert string to float
 float custom_atof(const char *str) {
     float result = 0.0f;
     float fraction = 0.1f;
     int sign = 1;
 
-    // Р СџРЎР‚Р С•Р С—РЎС“РЎРѓР С”Р В°Р ВµР С� Р С—РЎР‚Р С•Р В±Р ВµР В»РЎвЂ№
+    // Skip leading spaces
     while (*str == ' ') str++;
 
-    // Р С›Р В±РЎР‚Р В°Р В±Р В°РЎвЂљРЎвЂ№Р Р†Р В°Р ВµР С� Р В·Р Р…Р В°Р С”
+    // Handle sign
     if (*str == '-') {
         sign = -1;
         str++;
@@ -31,13 +33,13 @@ float custom_atof(const char *str) {
         str++;
     }
 
-    // Р С›Р В±РЎР‚Р В°Р В±Р В°РЎвЂљРЎвЂ№Р Р†Р В°Р ВµР С� РЎвЂ Р ВµР В»РЎС“РЎР‹ РЎвЂЎР В°РЎРѓРЎвЂљРЎРЉ
+    // Parse integer part
     while (*str >= '0' && *str <= '9') {
         result = result * 10.0f + (*str - '0');
         str++;
     }
 
-    // Р С›Р В±РЎР‚Р В°Р В±Р В°РЎвЂљРЎвЂ№Р Р†Р В°Р ВµР С� Р Т‘РЎР‚Р С•Р В±Р Р…РЎС“РЎР‹ РЎвЂЎР В°РЎРѓРЎвЂљРЎРЉ
+    // Parse decimal part
     if (*str == '.') {
         str++;
 
@@ -50,44 +52,47 @@ float custom_atof(const char *str) {
     return sign * result;
 }
 
-float targetTemperature = 0; // Р В¦Р ВµР В»Р ВµР Р†Р В°РЎРЏ РЎвЂљР ВµР С�Р С—Р ВµРЎР‚Р В°РЎвЂљРЎС“РЎР‚Р В°
+float targetTemperature = 0; // Target temperature
 char temp_str[20];
 uint32_t cmp_len = 0;
 float SendTemp = 0;
 
-// PID-Р С”Р С•РЎРЊРЎвЂћРЎвЂћР С‘РЎвЂ Р С‘Р ВµР Р…РЎвЂљРЎвЂ№
+// PID constants
 const float Kp = 12.0f;
 const float Ki = 0.4f;
 const float Kd = 4.0f;
 
-// Р С›Р С–РЎР‚Р В°Р Р…Р С‘РЎвЂЎР ВµР Р…Р С‘Р Вµ Р С‘Р Р…РЎвЂљР ВµР С–РЎР‚Р В°Р В»РЎРЉР Р…Р С•Р в„– РЎвЂЎР В°РЎРѓРЎвЂљР С‘
+// Integral limits
 const float IntMax = 50;
 const float IntMin = -50;
 
-// Р С›РЎв‚¬Р С‘Р В±Р С”Р С‘
-float errorPrevious = 0; // Р СџРЎР‚Р ВµР Т‘РЎвЂ№Р Т‘РЎС“РЎвЂ°Р В°РЎРЏ Р С•РЎв‚¬Р С‘Р В±Р С”Р В°
-float Integral = 0; // Р СњР В°Р С”Р С•Р С—Р В»Р ВµР Р…Р Р…РЎвЂ№Р в„– Р С‘Р Р…РЎвЂљР ВµР С–РЎР‚Р В°Р В»
+// Variables
+float errorPrevious = 0; // Previous error
+float Integral = 0; // Accumulated integral
 
-// PID-РЎР‚Р ВµР С–РЎС“Р В»РЎРЏРЎвЂљР С•РЎР‚
+// PID controller
 int PID(){
 	Read_VCP((uint8_t*)temp_str, &cmp_len);
-	targetTemperature = custom_atof(temp_str);
+	if (cmp_len > 0) {
+		temp_str[cmp_len] = '\0'; // Null terminate the string
+		targetTemperature = custom_atof(temp_str);
+	}
 
-	float error = targetTemperature - temperature; // Р С›РЎв‚¬Р С‘Р В±Р С”Р В° РЎвЂљР ВµР С”РЎС“РЎвЂ°Р ВµР в„– РЎвЂљР ВµР С�Р С—Р ВµРЎР‚Р В°РЎвЂљРЎС“РЎР‚РЎвЂ№
-	float P = Kp * error;// Р С™Р С•Р С�Р С—Р С•Р Р…Р ВµР Р…РЎвЂљ P
+	float error = targetTemperature - temperature; // Temperature error
+	float P = Kp * error;// Proportional component
 	Integral += Ki * error;
 
-	//Р С›Р С–РЎР‚Р В°Р Р…Р С‘РЎвЂЎР ВµР Р…Р С‘Р Вµ Р С‘Р Р…РЎвЂљР ВµР С–РЎР‚Р В°Р В»РЎРЉР Р…Р С•Р в„– РЎвЂЎР В°РЎРѓРЎвЂљР С‘
+	// Integral limits
 	if (Integral > IntMax){
 		Integral = IntMax;
 	}
 	if (Integral < IntMin){
 		Integral = IntMin;
 	}
-	float I = Integral;// Р С™Р С•Р С�Р С—Р Р…Р ВµР Р…РЎвЂљ I
+	float I = Integral;// Integral component
 
 	float derivative = error - errorPrevious;
-	float D = Kd * derivative;// Р С™Р С•Р С�Р С—Р С•Р Р…Р ВµР Р…РЎвЂљ D
+	float D = Kd * derivative;// Derivative component
 
 	int Power = P + I + D;
 	if (Power > 100){
@@ -101,7 +106,7 @@ int PID(){
 	return Power;
 }
 
-// Р В¤РЎС“Р Р…Р С”РЎвЂ Р С‘РЎРЏ Р Т‘Р В»РЎРЏ Р С•РЎвЂљР С—РЎР‚Р В°Р Р†Р С”Р С‘ РЎРѓР С•Р С•Р В±РЎвЂ°Р ВµР Р…Р С‘Р в„– РЎвЂЎР ВµРЎР‚Р ВµР В· USB VCP
+// Function for sending messages via USB VCP
 void SendMsg(const char *text) {
 	if(text == NULL) return;
 	int length = -1;
@@ -115,7 +120,7 @@ void SendMsg(const char *text) {
 	Write_VCP((uint8_t*)text, length);
 }
 
-// Р пїЅР Р…Р С‘РЎвЂ Р С‘Р В°Р В»Р С‘Р В·Р В°РЎвЂ Р С‘РЎРЏ Р РЃР пїЅР Сљ Р Т‘Р В»РЎРЏ РЎС“Р С—РЎР‚Р В°Р Р†Р В»Р ВµР Р…Р С‘РЎРЏ Р Р…Р В°Р С–РЎР‚Р ВµР Р†Р В°РЎвЂљР ВµР В»Р ВµР С�
+// Timer initialization for heater control
 void TIMEInit(void) {
 	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
 
@@ -149,24 +154,25 @@ void TIMEInit(void) {
 }
 
 int main(void) {
-    // Р СњР В°РЎРѓРЎвЂљРЎР‚Р С•Р в„–Р С”Р В° Р С—Р В°РЎР‚Р В°Р С�Р ВµРЎвЂљРЎР‚Р С•Р Р† USB Р С—Р С• РЎС“Р С�Р С•Р В»РЎвЂЎР В°Р Р…Р С‘РЎР‹
+    // Configure USB line coding parameters
     LC_DATA_RATE = 115200;
     LC_STOP_BITS = 0;
     LC_PARITY_TYPE = 0;
     LC_N_BITS_DATA = 8;
 
-    // Р С›РЎвЂљР С”Р В»РЎР‹РЎвЂЎР ВµР Р…Р С‘Р Вµ Р Р†РЎРѓР ВµРЎвЂ¦ Р С—РЎР‚Р ВµРЎР‚РЎвЂ№Р Р†Р В°Р Р…Р С‘Р в„–
+    // Disable all interrupts
     NVIC->ICER[0] = 0xFFFFFFFF;
 
-    ClockInit();
+    // Initialize system and USB
+    Set_System();
+    Set_USBClock();
+    USB_Interrupts_Config();
     USBInit();
     TIMEInit();
-    SysTick_Init();
     temperatureInit();
 
     Socket socket;
     socket.open();
-    //svlp::SVLP_Parser parser(socket);
     svlp::SVLP_Writer writer(socket, true);
 
     while(1) {
